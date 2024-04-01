@@ -28,6 +28,7 @@ tokio-util = { version = "0.7" }
 tokio-stream = "0.1"
 tonic = { workspace = true }
 tracing = "0.1"
+crossbeam = "0.8.4"
 
 [dependencies.temporal-sdk-core]
 path = "../core"

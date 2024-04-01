@@ -303,3 +303,34 @@ impl SignalData {
         self
     }
 }
+
+/// Data contained within a query request
+pub struct QueryData {
+    /// The arguments the query will receive
+    pub input: Vec<Payload>,
+    /// Metadata attached to the query
+    pub headers: HashMap<String, Payload>,
+}
+
+impl QueryData {
+    /// Create data for a query
+    pub fn new(input: impl IntoIterator<Item = impl Into<Payload>>) -> Self {
+        Self {
+            input: input.into_iter().map(Into::into).collect(),
+            headers: HashMap::new(),
+        }
+    }
+
+    /// Set a header k/v pair attached to the query
+    pub fn with_header(
+        &mut self,
+        key: impl Into<String>,
+        payload: impl Into<Payload>,
+    ) -> &mut Self {
+        self.headers.insert(key.into(), payload.into());
+        self
+    }
+}
+
+/// A type for stored query handlers
+pub type QueryHandler = Box<dyn Fn(QueryData) -> Option<Payload> + Send>;

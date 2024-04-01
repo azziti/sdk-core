@@ -1,9 +1,10 @@
 use crate::{
-    panic_formatter, CancellableID, RustWfCmd, SignalData, TimerResult, UnblockEvent,
-    UpdateContext, UpdateFunctions, UpdateInfo, WfContext, WfExitValue, WorkflowFunction,
-    WorkflowResult,
+    panic_formatter, workflow_context::QueryData, CancellableID, QueryHandler, RustWfCmd,
+    SignalData, TimerResult, UnblockEvent, UpdateContext, UpdateFunctions, UpdateInfo, WfContext,
+    WfExitValue, WorkflowFunction, WorkflowResult,
 };
 use anyhow::{anyhow, bail, Context as AnyhowContext, Error};
+use crossbeam::queue::SegQueue;
 use crossbeam_channel::Receiver;
 use futures::{future::BoxFuture, FutureExt};
 use std::{
@@ -22,10 +23,10 @@ use temporal_sdk_core_protos::{
             WorkflowActivationJob,
         },
         workflow_commands::{
-            request_cancel_external_workflow_execution as cancel_we, update_response,
+            self, request_cancel_external_workflow_execution as cancel_we, update_response,
             workflow_command, CancelChildWorkflowExecution, CancelSignalWorkflow, CancelTimer,
             CancelWorkflowExecution, CompleteWorkflowExecution, FailWorkflowExecution,
-            RequestCancelActivity, RequestCancelExternalWorkflowExecution,
+            QuerySuccess, RequestCancelActivity, RequestCancelExternalWorkflowExecution,
             RequestCancelLocalActivity, ScheduleActivity, ScheduleLocalActivity,
             StartChildWorkflowExecution, StartTimer, UpdateResponse,
         },
@@ -74,6 +75,8 @@ impl WorkflowFunction {
                 sig_chans: Default::default(),
                 updates: Default::default(),
                 update_futures: Default::default(),
+                query_handlers: Default::default(),
+                query_results: Default::default(),
             },
             tx,
         )
@@ -116,6 +119,10 @@ pub struct WorkflowFuture {
     updates: HashMap<String, UpdateFunctions>,
     /// Stores in-progress update futures
     update_futures: Vec<(String, BoxFuture<'static, Result<Payload, Error>>)>,
+    /// Maps query IDs to query implementations
+    query_handlers: HashMap<String, QueryHandler>,
+    /// Query results to be send back to core
+    query_results: SegQueue<workflow_commands::QueryResult>,
 }
 
 impl WorkflowFuture {
@@ -192,10 +199,27 @@ impl WorkflowFuture {
                 ))?,
                 Variant::UpdateRandomSeed(_) => (),
                 Variant::QueryWorkflow(q) => {
-                    error!(
-                        "Queries are not implemented in the Rust SDK. Got query '{}'",
-                        q.query_id
-                    );
+                    let qt = q.query_type;
+                    let headers = q.headers;
+                    let args = q.arguments;
+
+                    let mut dat = QueryData::new(args);
+                    dat.headers = headers;
+
+                    let handler = self.query_handlers.get(&qt).ok_or_else(|| {
+                        anyhow!("Query type {} not registered on this workflow", qt)
+                    })?;
+
+                    let wfc = workflow_commands::QueryResult {
+                        query_id: q.query_id,
+                        variant: Some(workflow_commands::query_result::Variant::Succeeded(
+                            QuerySuccess {
+                                response: handler(dat),
+                            },
+                        )),
+                    };
+
+                    self.query_results.push(wfc);
                 }
                 Variant::CancelWorkflow(_) => {
                     // TODO: Cancel pending futures, etc
@@ -565,6 +589,9 @@ impl WorkflowFuture {
                         res = self.inner.poll_unpin(cx);
                     }
                     self.sig_chans.insert(signame, SigChanOrBuffer::Chan(chan));
+                }
+                RustWfCmd::RegisterQueryHandler(queryname, handler) => {
+                    self.query_handlers.insert(queryname, handler);
                 }
                 RustWfCmd::ForceWFTFailure(err) => {
                     self.fail_wft(run_id.to_string(), err);

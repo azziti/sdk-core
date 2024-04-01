@@ -45,6 +45,8 @@ use temporal_sdk_core_protos::{
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+pub use self::options::{QueryData, QueryHandler};
+
 /// Used within workflows to issue commands, get info, etc.
 #[derive(Clone)]
 pub struct WfContext {
@@ -326,6 +328,18 @@ impl WfContext {
         let (tx, rx) = mpsc::unbounded_channel();
         self.send(RustWfCmd::SubscribeSignal(signal_name.into(), tx));
         DrainableSignalStream(UnboundedReceiverStream::new(rx))
+    }
+
+    /// Register a query handler for the given query type
+    pub fn register_query_handler<Q, F>(&self, query_type: Q, handler: F)
+    where
+        Q: Into<String>,
+        F: Fn(QueryData) -> Option<Payload> + Send + 'static,
+    {
+        self.send(RustWfCmd::RegisterQueryHandler(
+            query_type.into(),
+            Box::new(handler),
+        ));
     }
 
     /// Force a workflow task failure (EX: in order to retry on non-sticky queue)
